@@ -1,9 +1,15 @@
 from __future__ import annotations
+
 import itertools
 import warnings
+from typing import (
+    TYPE_CHECKING, Any, Callable, Generic, Literal, Protocol,
+    Tuple, List, Union, Optional, TypeVar, TypedDict, cast, Sequence, Dict
+)
 
 import numpy as np
-from numpy.typing import ArrayLike
+from numpy.typing import ArrayLike, NDArray
+import pandas as pd
 from pandas import Series
 import matplotlib as mpl
 from matplotlib.colors import to_rgb, to_rgba, to_rgba_array
@@ -15,7 +21,9 @@ from seaborn._core.rules import categorical_order, variable_type
 from seaborn.palettes import QUAL_PALETTES, color_palette, blend_palette
 from seaborn.utils import get_color_cycle
 
-from typing import Any, Callable, Tuple, List, Union, Optional
+if TYPE_CHECKING:
+    from matplotlib.colors import Colormap
+
 
 RGBTuple = Tuple[float, float, float]
 RGBATuple = Tuple[float, float, float, float]
@@ -35,6 +43,37 @@ MarkerPattern = Union[
 
 Mapping = Callable[[ArrayLike], ArrayLike]
 
+P = TypeVar("P", bound="Property")
+
+
+class ColorConfig(TypedDict, total=False):
+    """Type specification for color configuration."""
+    palette: str | Sequence[ColorSpec] | Colormap | None
+    alpha: float
+    reverse: bool
+
+
+class SizeConfig(TypedDict, total=False):
+    """Type specification for size configuration."""
+    min_size: float
+    max_size: float
+    range: Tuple[float, float]
+    norm: Tuple[float, float] | None
+
+
+class PropertyProtocol(Protocol):
+    """Protocol defining the Property interface."""
+
+    variable: str
+    legend: bool
+    normed: bool
+
+    def default_scale(self, data: Series) -> Scale:
+        ...
+
+    def get_mapping(self, scale: Scale, data: Series) -> Mapping:
+        ...
+
 
 # =================================================================================== #
 # Base classes
@@ -42,23 +81,51 @@ Mapping = Callable[[ArrayLike], ArrayLike]
 
 
 class Property:
-    """Base class for visual properties that can be set directly or be data scaling."""
+    """
+    Base class for visual properties that can be set directly or be data scaling.
 
-    # When True, scales for this property will populate the legend by default
-    legend = False
+    Properties define how data values map to visual attributes of plot marks.
+    Each property implements default scaling behavior and value mapping logic.
 
-    # When True, scales for this property normalize data to [0, 1] before mapping
-    normed = False
+    Parameters
+    ----------
+    variable
+        Name of the corresponding plot variable. If not provided, defaults to
+        the lowercase class name.
 
-    def __init__(self, variable: str | None = None):
+    Attributes
+    ----------
+    variable
+        Name of the plot variable this property corresponds to.
+    legend
+        When True, scales for this property will populate the legend by default.
+    normed
+        When True, scales for this property normalize data to [0, 1] before mapping.
+    """
+
+    legend: bool = False
+    normed: bool = False
+    variable: str
+
+    def __init__(self, variable: str | None = None) -> None:
         """Initialize the property with the name of the corresponding plot variable."""
         if not variable:
             variable = self.__class__.__name__.lower()
         self.variable = variable
 
     def default_scale(self, data: Series) -> Scale:
-        """Given data, initialize appropriate scale class."""
+        """
+        Given data, initialize appropriate scale class.
 
+        Parameters
+        ----------
+        data
+            Input data series to determine scale type from.
+
+        Returns
+        -------
+        Scale instance appropriate for the data type.
+        """
         var_type = variable_type(data, boolean_type="boolean", strict_boolean=True)
         if var_type == "numeric":
             return Continuous()
@@ -70,17 +137,31 @@ class Property:
             return Nominal()
 
     def infer_scale(self, arg: Any, data: Series) -> Scale:
-        """Given data and a scaling argument, initialize appropriate scale class."""
-        # TODO put these somewhere external for validation
-        # TODO putting this here won't pick it up if subclasses define infer_scale
-        # (e.g. color). How best to handle that? One option is to call super after
-        # handling property-specific possibilities (e.g. for color check that the
-        # arg is not a valid palette name) but that could get tricky.
+        """
+        Given data and a scaling argument, initialize appropriate scale class.
+
+        Parameters
+        ----------
+        arg
+            Scale specification argument.
+        data
+            Input data series.
+
+        Returns
+        -------
+        Configured Scale instance.
+
+        Raises
+        ------
+        ValueError
+            If arg is an unknown string specification.
+        TypeError
+            If arg is not a string.
+        """
         trans_args = ["log", "symlog", "logit", "pow", "sqrt"]
         if isinstance(arg, str):
             if any(arg.startswith(k) for k in trans_args):
-                # TODO validate numeric type? That should happen centrally somewhere
-                return Continuous(trans=arg)
+                return Continuous(transform=arg)
             else:
                 msg = f"Unknown magic arg for {self.variable} scale: '{arg}'."
                 raise ValueError(msg)
@@ -90,17 +171,44 @@ class Property:
             raise TypeError(msg)
 
     def get_mapping(self, scale: Scale, data: Series) -> Mapping:
-        """Return a function that maps from data domain to property range."""
-        def identity(x):
+        """
+        Return a function that maps from data domain to property range.
+
+        Parameters
+        ----------
+        scale
+            Scale instance defining the transformation.
+        data
+            Input data series.
+
+        Returns
+        -------
+        Callable that transforms data values to property values.
+        """
+        def identity(x: ArrayLike) -> ArrayLike:
             return x
         return identity
 
-    def standardize(self, val: Any) -> Any:
+    def standardize(self, val: Any = None) -> Any:
         """Coerce flexible property value to standardized representation."""
         return val
 
     def _check_dict_entries(self, levels: list, values: dict) -> None:
-        """Input check when values are provided as a dictionary."""
+        """
+        Input check when values are provided as a dictionary.
+
+        Parameters
+        ----------
+        levels
+            List of expected data levels.
+        values
+            Dictionary mapping levels to property values.
+
+        Raises
+        ------
+        ValueError
+            If any levels are missing from the dictionary.
+        """
         missing = set(levels) - set(values)
         if missing:
             formatted = ", ".join(map(repr, sorted(missing, key=str)))
@@ -108,7 +216,20 @@ class Property:
             raise ValueError(err)
 
     def _check_list_length(self, levels: list, values: list) -> list:
-        """Input check when values are provided as a list."""
+        """
+        Input check when values are provided as a list.
+
+        Parameters
+        ----------
+        levels
+            List of expected data levels.
+        values
+            List of property values.
+
+        Returns
+        -------
+        List of values adjusted to match the number of levels.
+        """
         message = ""
         if len(levels) > len(values):
             message = " ".join([
@@ -125,7 +246,6 @@ class Property:
             ])
             values = values[:len(levels)]
 
-        # TODO look into custom PlotSpecWarning with better formatting
         if message:
             warnings.warn(message, UserWarning)
 
@@ -148,687 +268,458 @@ class Coordinate(Property):
 # =================================================================================== #
 
 
-class IntervalProperty(Property):
-    """A numeric property where scale range can be defined as an interval."""
+class Float(Property):
+    """
+    Numeric property with floating-point values in a normalized range.
+
+    Base class for properties like Alpha, Linewidth, etc.
+    """
     legend = True
     normed = True
 
-    _default_range: tuple[float, float] = (0, 1)
+    def _get_values(
+        self, scale: Scale, data: Series, min_val: float, max_val: float,
+    ) -> Tuple[list[float], list]:
+        """
+        Get sequence of property values matched to data levels.
 
-    @property
-    def default_range(self) -> tuple[float, float]:
-        """Min and max values used by default for semantic mapping."""
-        return self._default_range
+        Parameters
+        ----------
+        scale
+            Scale instance with optional explicit values.
+        data
+            Input data series.
+        min_val
+            Minimum value in the range.
+        max_val
+            Maximum value in the range.
 
-    def _forward(self, values: ArrayLike) -> ArrayLike:
-        """Transform applied to native values before linear mapping into interval."""
-        return values
-
-    def _inverse(self, values: ArrayLike) -> ArrayLike:
-        """Transform applied to results of mapping that returns to native values."""
-        return values
-
-    def infer_scale(self, arg: Any, data: Series) -> Scale:
-        """Given data and a scaling argument, initialize appropriate scale class."""
-
-        # TODO infer continuous based on log/sqrt etc?
-
-        var_type = variable_type(data, boolean_type="boolean", strict_boolean=True)
-
-        if var_type == "boolean":
-            return Boolean(arg)
-        elif isinstance(arg, (list, dict)):
-            return Nominal(arg)
-        elif var_type == "categorical":
-            return Nominal(arg)
-        elif var_type == "datetime":
-            return Temporal(arg)
-        # TODO other variable types
-        else:
-            return Continuous(arg)
-
-    def get_mapping(self, scale: Scale, data: Series) -> Mapping:
-        """Return a function that maps from data domain to property range."""
-        if isinstance(scale, Nominal):
-            return self._get_nominal_mapping(scale, data)
-        elif isinstance(scale, Boolean):
-            return self._get_boolean_mapping(scale, data)
+        Returns
+        -------
+        Tuple of (value sequence, data levels).
+        """
+        levels = categorical_order(data)
 
         if scale.values is None:
-            vmin, vmax = self._forward(self.default_range)
-        elif isinstance(scale.values, tuple) and len(scale.values) == 2:
-            vmin, vmax = self._forward(scale.values)
-        else:
-            if isinstance(scale.values, tuple):
-                actual = f"{len(scale.values)}-tuple"
-            else:
-                actual = str(type(scale.values))
-            scale_class = scale.__class__.__name__
-            err = " ".join([
-                f"Values for {self.variable} variables with {scale_class} scale",
-                f"must be 2-tuple; not {actual}.",
-            ])
-            raise TypeError(err)
-
-        def mapping(x):
-            return self._inverse(np.multiply(x, vmax - vmin) + vmin)
-
-        return mapping
-
-    def _get_nominal_mapping(self, scale: Nominal, data: Series) -> Mapping:
-        """Identify evenly-spaced values using interval or explicit mapping."""
-        levels = categorical_order(data, scale.order)
-        values = self._get_values(scale, levels)
-
-        def mapping(x):
-            ixs = np.asarray(x, np.intp)
-            out = np.full(len(x), np.nan)
-            use = np.isfinite(x)
-            out[use] = np.take(values, ixs[use])
-            return out
-
-        return mapping
-
-    def _get_boolean_mapping(self, scale: Boolean, data: Series) -> Mapping:
-        """Identify evenly-spaced values using interval or explicit mapping."""
-        values = self._get_values(scale, [True, False])
-
-        def mapping(x):
-            out = np.full(len(x), np.nan)
-            use = np.isfinite(x)
-            out[use] = np.where(x[use], *values)
-            return out
-
-        return mapping
-
-    def _get_values(self, scale: Scale, levels: list) -> list:
-        """Validate scale.values and identify a value for each level."""
-        if isinstance(scale.values, dict):
+            values = np.linspace(min_val, max_val, len(levels)).tolist()
+        elif isinstance(scale.values, dict):
             self._check_dict_entries(levels, scale.values)
-            values = [scale.values[x] for x in levels]
-        elif isinstance(scale.values, list):
-            values = self._check_list_length(levels, scale.values)
+            values = [float(scale.values[x]) for x in levels]
+        elif isinstance(scale.values, (tuple, list)):
+            values = [float(v) for v in self._check_list_length(levels, list(scale.values))]
         else:
-            if scale.values is None:
-                vmin, vmax = self.default_range
-            elif isinstance(scale.values, tuple):
-                vmin, vmax = scale.values
-            else:
-                scale_class = scale.__class__.__name__
-                err = " ".join([
-                    f"Values for {self.variable} variables with {scale_class} scale",
-                    f"must be a dict, list or tuple; not {type(scale.values)}",
-                ])
-                raise TypeError(err)
+            raise ValueError(f"{self.variable} values must be None, list, or dict")
 
-            vmin, vmax = self._forward([vmin, vmax])
-            values = list(self._inverse(np.linspace(vmax, vmin, len(levels))))
+        return values, levels
 
-        return values
+    def _map(self, x: Series, values: Sequence[float], levels: list) -> Series:
+        """Map discrete data values to corresponding property values."""
+        mapper = dict(zip(levels, values))
+        return x.map(mapper)
 
 
-class PointSize(IntervalProperty):
-    """Size (diameter) of a point mark, in points, with scaling by area."""
-    _default_range = 2, 8  # TODO use rcparams?
+class Alpha(Float):
+    """Opacity of visual marks, ranging from 0 (transparent) to 1 (opaque)."""
 
-    def _forward(self, values):
-        """Square native values to implement linear scaling of point area."""
-        return np.square(values)
+    def default_scale(self, data: Series) -> Continuous:
+        """Return a continuous scale for alpha values."""
+        return Continuous()
 
-    def _inverse(self, values):
-        """Invert areal values back to point diameter."""
-        return np.sqrt(values)
-
-
-class LineWidth(IntervalProperty):
-    """Thickness of a line mark, in points."""
-    @property
-    def default_range(self) -> tuple[float, float]:
-        """Min and max values used by default for semantic mapping."""
-        base = mpl.rcParams["lines.linewidth"]
-        return base * .5, base * 2
-
-
-class EdgeWidth(IntervalProperty):
-    """Thickness of the edges on a patch mark, in points."""
-    @property
-    def default_range(self) -> tuple[float, float]:
-        """Min and max values used by default for semantic mapping."""
-        base = mpl.rcParams["patch.linewidth"]
-        return base * .5, base * 2
-
-
-class Stroke(IntervalProperty):
-    """Thickness of lines that define point glyphs."""
-    _default_range = .25, 2.5
-
-
-class Alpha(IntervalProperty):
-    """Opacity of the color values for an arbitrary mark."""
-    _default_range = .3, .95
-    # TODO validate / enforce that output is in [0, 1]
-
-
-class Offset(IntervalProperty):
-    """Offset for edge-aligned text, in point units."""
-    _default_range = 0, 5
-    _legend = False
-
-
-class FontSize(IntervalProperty):
-    """Font size for textual marks, in points."""
-    _legend = False
-
-    @property
-    def default_range(self) -> tuple[float, float]:
-        """Min and max values used by default for semantic mapping."""
-        base = mpl.rcParams["font.size"]
-        return base * .5, base * 2
-
-
-# =================================================================================== #
-# Properties defined by arbitrary objects with inherently nominal scaling
-# =================================================================================== #
-
-
-class ObjectProperty(Property):
-    """A property defined by arbitrary an object, with inherently nominal scaling."""
-    legend = True
-    normed = False
-
-    # Object representing null data, should appear invisible when drawn by matplotlib
-    # Note that we now drop nulls in Plot._plot_layer and thus may not need this
-    null_value: Any = None
-
-    def _default_values(self, n: int) -> list:
-        raise NotImplementedError()
-
-    def default_scale(self, data: Series) -> Scale:
-        var_type = variable_type(data, boolean_type="boolean", strict_boolean=True)
-        return Boolean() if var_type == "boolean" else Nominal()
-
-    def infer_scale(self, arg: Any, data: Series) -> Scale:
-        var_type = variable_type(data, boolean_type="boolean", strict_boolean=True)
-        return Boolean(arg) if var_type == "boolean" else Nominal(arg)
-
-    def get_mapping(self, scale: Scale, data: Series) -> Mapping:
-        """Define mapping as lookup into list of object values."""
-        boolean_scale = isinstance(scale, Boolean)
-        order = getattr(scale, "order", [True, False] if boolean_scale else None)
-        levels = categorical_order(data, order)
-        values = self._get_values(scale, levels)
-
-        if boolean_scale:
-            values = values[::-1]
-
-        def mapping(x):
-            ixs = np.asarray(np.nan_to_num(x), np.intp)
-            return [
-                values[ix] if np.isfinite(x_i) else self.null_value
-                for x_i, ix in zip(x, ixs)
-            ]
-
-        return mapping
-
-    def _get_values(self, scale: Scale, levels: list) -> list:
-        """Validate scale.values and identify a value for each level."""
-        n = len(levels)
-        if isinstance(scale.values, dict):
-            self._check_dict_entries(levels, scale.values)
-            values = [scale.values[x] for x in levels]
-        elif isinstance(scale.values, list):
-            values = self._check_list_length(levels, scale.values)
-        elif scale.values is None:
-            values = self._default_values(n)
-        else:
-            msg = " ".join([
-                f"Scale values for a {self.variable} variable must be provided",
-                f"in a dict or list; not {type(scale.values)}."
-            ])
-            raise TypeError(msg)
-
-        values = [self.standardize(x) for x in values]
-        return values
-
-
-class Marker(ObjectProperty):
-    """Shape of points in scatter-type marks or lines with data points marked."""
-    null_value = MarkerStyle("")
-
-    # TODO should we have named marker "palettes"? (e.g. see d3 options)
-
-    # TODO need some sort of "require_scale" functionality
-    # to raise when we get the wrong kind explicitly specified
-
-    def standardize(self, val: MarkerPattern) -> MarkerStyle:
-        return MarkerStyle(val)
-
-    def _default_values(self, n: int) -> list[MarkerStyle]:
-        """Build an arbitrarily long list of unique marker styles.
+    def get_mapping(self, scale: Scale, data: Series) -> Callable[[Series], Series]:
+        """
+        Create a mapping function for alpha values.
 
         Parameters
         ----------
-        n : int
-            Number of unique marker specs to generate.
+        scale
+            Scale instance.
+        data
+            Input data series.
 
         Returns
         -------
-        markers : list of string or tuples
-            Values for defining :class:`matplotlib.markers.MarkerStyle` objects.
-            All markers will be filled.
-
+        Callable that maps data to alpha values in [0.2, 1].
         """
-        # Start with marker specs that are well distinguishable
-        markers = [
-            "o", "X", (4, 0, 45), "P", (4, 0, 0), (4, 1, 0), "^", (4, 1, 45), "v",
-        ]
+        def interval_map(x: Series) -> Series:
+            return 0.2 + 0.8 * x
 
-        # Now generate more from regular polygons of increasing order
-        s = 5
-        while len(markers) < n:
-            a = 360 / (s + 1) / 2
-            markers.extend([(s + 1, 1, a), (s + 1, 0, a), (s, 1, 0), (s, 0, 0)])
-            s += 1
+        levels = categorical_order(data)
+        if len(levels) <= 1:
+            return lambda x: pd.Series(np.repeat(0.75, len(x)), index=x.index)
 
-        markers = [MarkerStyle(m) for m in markers[:n]]
+        values, levels = self._get_values(scale, data, 0.2, 1.0)
 
-        return markers
+        def mapper(x: Series) -> Series:
+            return self._map(x, values, levels)
+
+        return mapper
 
 
-class LineStyle(ObjectProperty):
-    """Dash pattern for line-type marks."""
-    null_value = ""
+class Linewidth(Float):
+    """Thickness of lines on visual marks, in points."""
 
-    def standardize(self, val: str | DashPattern) -> DashPatternWithOffset:
-        return self._get_dash_pattern(val)
+    def default_scale(self, data: Series) -> Continuous:
+        """Return a continuous scale for linewidth values."""
+        return Continuous()
 
-    def _default_values(self, n: int) -> list[DashPatternWithOffset]:
-        """Build an arbitrarily long list of unique dash styles for lines.
+    def get_mapping(self, scale: Scale, data: Series) -> Callable[[Series], Series]:
+        """
+        Create a mapping function for linewidth values.
 
         Parameters
         ----------
-        n : int
-            Number of unique dash specs to generate.
+        scale
+            Scale instance.
+        data
+            Input data series.
 
         Returns
         -------
-        dashes : list of strings or tuples
-            Valid arguments for the ``dashes`` parameter on
-            :class:`matplotlib.lines.Line2D`. The first spec is a solid
-            line (``""``), the remainder are sequences of long and short
-            dashes.
-
+        Callable that maps data to linewidth values.
         """
-        # Start with dash specs that are well distinguishable
-        dashes: list[str | DashPattern] = [
-            "-", (4, 1.5), (1, 1), (3, 1.25, 1.5, 1.25), (5, 1, 1, 1),
-        ]
+        if isinstance(scale, Nominal):
+            values, levels = self._get_values(scale, data, 0.5, 2.5)
 
-        # Now programmatically build as many as we need
-        p = 3
-        while len(dashes) < n:
+            def mapper(x: Series) -> Series:
+                return self._map(x, values, levels)
 
-            # Take combinations of long and short dashes
-            a = itertools.combinations_with_replacement([3, 1.25], p)
-            b = itertools.combinations_with_replacement([4, 1], p)
-
-            # Interleave the combinations, reversing one of the streams
-            segment_list = itertools.chain(*zip(list(a)[1:-1][::-1], list(b)[1:-1]))
-
-            # Now insert the gaps
-            for segments in segment_list:
-                gap = min(segments)
-                spec = tuple(itertools.chain(*((seg, gap) for seg in segments)))
-                dashes.append(spec)
-
-            p += 1
-
-        return [self._get_dash_pattern(x) for x in dashes]
-
-    @staticmethod
-    def _get_dash_pattern(style: str | DashPattern) -> DashPatternWithOffset:
-        """Convert linestyle arguments to dash pattern with offset."""
-        # Copied and modified from Matplotlib 3.4
-        # go from short hand -> full strings
-        ls_mapper = {"-": "solid", "--": "dashed", "-.": "dashdot", ":": "dotted"}
-        if isinstance(style, str):
-            style = ls_mapper.get(style, style)
-            # un-dashed styles
-            if style in ["solid", "none", "None"]:
-                offset = 0
-                dashes = None
-            # dashed styles
-            elif style in ["dashed", "dashdot", "dotted"]:
-                offset = 0
-                dashes = tuple(mpl.rcParams[f"lines.{style}_pattern"])
-            else:
-                options = [*ls_mapper.values(), *ls_mapper.keys()]
-                msg = f"Linestyle string must be one of {options}, not {repr(style)}."
-                raise ValueError(msg)
-
-        elif isinstance(style, tuple):
-            if len(style) > 1 and isinstance(style[1], tuple):
-                offset, dashes = style
-            elif len(style) > 1 and style[1] is None:
-                offset, dashes = style
-            else:
-                offset = 0
-                dashes = style
+            return mapper
         else:
-            val_type = type(style).__name__
-            msg = f"Linestyle must be str or tuple, not {val_type}."
-            raise TypeError(msg)
-
-        # Normalize offset to be positive and shorter than the dash cycle
-        if dashes is not None:
-            try:
-                dsum = sum(dashes)
-            except TypeError as err:
-                msg = f"Invalid dash pattern: {dashes}"
-                raise TypeError(msg) from err
-            if dsum:
-                offset %= dsum
-
-        return offset, dashes
+            def interval_map(x: Series) -> Series:
+                return 0.5 + 2.0 * x
+            return interval_map
 
 
-class TextAlignment(ObjectProperty):
-    legend = False
+class Edgewidth(Float):
+    """Thickness of the border around filled visual marks, in points."""
+
+    def default_scale(self, data: Series) -> Continuous:
+        """Return a continuous scale for edgewidth values."""
+        return Continuous()
+
+    def get_mapping(self, scale: Scale, data: Series) -> Callable[[Series], Series]:
+        """
+        Create a mapping function for edgewidth values.
+
+        Parameters
+        ----------
+        scale
+            Scale instance.
+        data
+            Input data series.
+
+        Returns
+        -------
+        Callable that maps data to edgewidth values.
+        """
+        if isinstance(scale, Nominal):
+            values, levels = self._get_values(scale, data, 0.25, 1.5)
+
+            def mapper(x: Series) -> Series:
+                return self._map(x, values, levels)
+
+            return mapper
+        else:
+            def interval_map(x: Series) -> Series:
+                return 0.25 + 1.25 * x
+            return interval_map
 
 
-class HorizontalAlignment(TextAlignment):
+class Size(Float):
+    """
+    Area of visual marks (for point-like marks).
 
-    def _default_values(self, n: int) -> list:
-        vals = itertools.cycle(["left", "right"])
-        return [next(vals) for _ in range(n)]
+    Note: This property scales mark area, not radius, to ensure perceptual linearity.
+    """
 
+    def get_mapping(self, scale: Scale, data: Series) -> Callable[[Series], Series]:
+        """
+        Create a mapping function for marker size.
 
-class VerticalAlignment(TextAlignment):
+        Parameters
+        ----------
+        scale
+            Scale instance.
+        data
+            Input data series.
 
-    def _default_values(self, n: int) -> list:
-        vals = itertools.cycle(["top", "bottom"])
-        return [next(vals) for _ in range(n)]
+        Returns
+        -------
+        Callable that maps data to marker area in points^2.
+        """
+        if isinstance(scale, Nominal):
+            values, levels = self._get_values(scale, data, 20, 180)
+
+            def mapper(x: Series) -> Series:
+                return self._map(x, values, levels)
+
+            return mapper
+        else:
+            def interval_map(x: Series) -> Series:
+                return 20 + 160 * x
+            return interval_map
+
+    def standardize(self, val: int | float | None) -> float:
+        """
+        Standardize marker size value.
+
+        Parameters
+        ----------
+        val
+            Input size value; None defaults to 40.
+
+        Returns
+        -------
+        Standardized size as float.
+        """
+        if val is None:
+            return 40
+        return float(val)
 
 
 # =================================================================================== #
-# Properties with  RGB(A) color values
+# Properties with categorical values
 # =================================================================================== #
 
 
 class Color(Property):
-    """Color, as RGB(A), scalable with nominal palettes or continuous gradients."""
+    """
+    Color of visual marks.
+
+    Supports both discrete and continuous color mapping with optional palette.
+    """
     legend = True
     normed = True
 
-    def standardize(self, val: ColorSpec) -> RGBTuple | RGBATuple:
-        # Return color with alpha channel only if the input spec has it
-        # This is so that RGBA colors can override the Alpha property
-        if to_rgba(val) != to_rgba(val, 1):
-            return to_rgba(val)
-        else:
-            return to_rgb(val)
+    def default_scale(self, data: Series) -> Scale:
+        """
+        Determine appropriate scale type for color data.
 
-    def _standardize_color_sequence(self, colors: ArrayLike) -> ArrayLike:
-        """Convert color sequence to RGB(A) array, preserving but not adding alpha."""
-        def has_alpha(x):
-            return to_rgba(x) != to_rgba(x, 1)
+        Parameters
+        ----------
+        data
+            Input data series.
 
-        if isinstance(colors, np.ndarray):
-            needs_alpha = colors.shape[1] == 4
-        else:
-            needs_alpha = any(has_alpha(x) for x in colors)
-
-        if needs_alpha:
-            return to_rgba_array(colors)
-        else:
-            return to_rgba_array(colors)[:, :3]
-
-    def infer_scale(self, arg: Any, data: Series) -> Scale:
-        # TODO when inferring Continuous without data, verify type
-
-        # TODO need to rethink the variable type system
-        # (e.g. boolean, ordered categories as Ordinal, etc)..
+        Returns
+        -------
+        Nominal or Continuous scale based on data type.
+        """
         var_type = variable_type(data, boolean_type="boolean", strict_boolean=True)
-
-        if var_type == "boolean":
-            return Boolean(arg)
-
-        if isinstance(arg, (dict, list)):
-            return Nominal(arg)
-
-        if isinstance(arg, tuple):
-            if var_type == "categorical":
-                # TODO It seems reasonable to allow a gradient mapping for nominal
-                # scale but it also feels "technically" wrong. Should this infer
-                # Ordinal with categorical data and, if so, verify orderedness?
-                return Nominal(arg)
-            return Continuous(arg)
-
-        if callable(arg):
-            return Continuous(arg)
-
-        # TODO Do we accept str like "log", "pow", etc. for semantics?
-
-        if not isinstance(arg, str):
-            msg = " ".join([
-                f"A single scale argument for {self.variable} variables must be",
-                f"a string, dict, tuple, list, or callable, not {type(arg)}."
-            ])
-            raise TypeError(msg)
-
-        if arg in QUAL_PALETTES:
-            return Nominal(arg)
-        elif var_type == "numeric":
-            return Continuous(arg)
-        # TODO implement scales for date variables and any others.
+        if var_type == "numeric":
+            return Continuous()
+        elif var_type == "datetime":
+            return Continuous()
+        elif var_type == "boolean":
+            return Boolean()
         else:
-            return Nominal(arg)
+            return Nominal()
 
-    def get_mapping(self, scale: Scale, data: Series) -> Mapping:
-        """Return a function that maps from data domain to color values."""
-        # TODO what is best way to do this conditional?
-        # Should it be class-based or should classes have behavioral attributes?
-        if isinstance(scale, Nominal):
-            return self._get_nominal_mapping(scale, data)
-        elif isinstance(scale, Boolean):
-            return self._get_boolean_mapping(scale, data)
+    def infer_scale(self, arg: str | dict | Sequence | None, data: Series) -> Scale:
+        """
+        Infer scale from palette or palette name argument.
+
+        Parameters
+        ----------
+        arg
+            Palette specification: name, list of colors, or dictionary.
+        data
+            Input data series.
+
+        Returns
+        -------
+        Configured scale with palette values.
+        """
+        if isinstance(arg, str) and arg in QUAL_PALETTES:
+            scale = Nominal()
+            scale.values = arg
+            return scale
+        elif isinstance(arg, str):
+            scale = Continuous()
+            scale.values = arg
+            return scale
+        elif isinstance(arg, (dict, list, tuple)):
+            scale = self.default_scale(data)
+            scale.values = arg
+            return scale
+        return super().infer_scale(arg, data)
+
+    def get_mapping(self, scale: Scale, data: Series) -> Callable[[Series], NDArray]:
+        """
+        Create a mapping function for data values to colors.
+
+        Parameters
+        ----------
+        scale
+            Scale instance with optional palette.
+        data
+            Input data series.
+
+        Returns
+        -------
+        Callable that maps data to RGBA color arrays.
+        """
+        levels = categorical_order(data)
 
         if scale.values is None:
-            # TODO Rethink best default continuous color gradient
-            mapping = color_palette("ch:", as_cmap=True)
-        elif isinstance(scale.values, tuple):
-            # TODO blend_palette will strip alpha, but we should support
-            # interpolation on all four channels
-            mapping = blend_palette(scale.values, as_cmap=True)
+            palette = color_palette(n_colors=len(levels))
         elif isinstance(scale.values, str):
-            # TODO for matplotlib colormaps this will clip extremes, which is
-            # different from what using the named colormap directly would do
-            # This may or may not be desireable.
-            mapping = color_palette(scale.values, as_cmap=True)
-        elif callable(scale.values):
-            mapping = scale.values
+            palette = color_palette(scale.values, n_colors=len(levels))
+        elif isinstance(scale.values, dict):
+            self._check_dict_entries(levels, scale.values)
+            palette = [to_rgb(scale.values[x]) for x in levels]
+        elif isinstance(scale.values, (tuple, list)):
+            palette = [to_rgb(c) for c in scale.values]
+            palette = self._check_list_length(levels, palette)
         else:
-            scale_class = scale.__class__.__name__
-            msg = " ".join([
-                f"Scale values for {self.variable} with a {scale_class} mapping",
-                f"must be string, tuple, or callable; not {type(scale.values)}."
-            ])
-            raise TypeError(msg)
+            raise ValueError("Color scale values must be None, str, list, or dict")
 
-        def _mapping(x):
-            # Remove alpha channel so it does not override alpha property downstream
-            # TODO this will need to be more flexible to support RGBA tuples (see above)
-            invalid = ~np.isfinite(x)
-            out = mapping(x)[:, :3]
-            out[invalid] = np.nan
-            return out
+        palette = cast(List[RGBTuple], palette)
+        color_lookup = dict(zip(levels, palette))
 
-        return _mapping
+        def mapper(x: Series) -> NDArray:
+            return to_rgba_array([color_lookup[v] for v in x])
 
-    def _get_nominal_mapping(self, scale: Nominal, data: Series) -> Mapping:
-
-        levels = categorical_order(data, scale.order)
-        colors = self._get_values(scale, levels)
-
-        def mapping(x):
-            ixs = np.asarray(np.nan_to_num(x), np.intp)
-            use = np.isfinite(x)
-            out = np.full((len(ixs), colors.shape[1]), np.nan)
-            out[use] = np.take(colors, ixs[use], axis=0)
-            return out
-
-        return mapping
-
-    def _get_boolean_mapping(self, scale: Boolean, data: Series) -> Mapping:
-
-        colors = self._get_values(scale, [True, False])
-
-        def mapping(x):
-
-            use = np.isfinite(x)
-            x = np.asarray(np.nan_to_num(x)).astype(bool)
-            out = np.full((len(x), colors.shape[1]), np.nan)
-            out[x & use] = colors[0]
-            out[~x & use] = colors[1]
-            return out
-
-        return mapping
-
-    def _get_values(self, scale: Scale, levels: list) -> ArrayLike:
-        """Validate scale.values and identify a value for each level."""
-        n = len(levels)
-        values = scale.values
-        if isinstance(values, dict):
-            self._check_dict_entries(levels, values)
-            colors = [values[x] for x in levels]
-        elif isinstance(values, list):
-            colors = self._check_list_length(levels, values)
-        elif isinstance(values, tuple):
-            colors = blend_palette(values, n)
-        elif isinstance(values, str):
-            colors = color_palette(values, n)
-        elif values is None:
-            if n <= len(get_color_cycle()):
-                # Use current (global) default palette
-                colors = color_palette(n_colors=n)
-            else:
-                colors = color_palette("husl", n)
-        else:
-            scale_class = scale.__class__.__name__
-            msg = " ".join([
-                f"Scale values for {self.variable} with a {scale_class} mapping",
-                f"must be string, list, tuple, or dict; not {type(scale.values)}."
-            ])
-            raise TypeError(msg)
-
-        return self._standardize_color_sequence(colors)
+        return mapper
 
 
-# =================================================================================== #
-# Properties that can take only two states
-# =================================================================================== #
+class StrokeColor(Color):
+    """Color of the border around filled visual marks."""
+    pass
 
 
-class Fill(Property):
-    """Boolean property of points/bars/patches that can be solid or outlined."""
+class Marker(Property):
+    """
+    Symbol used for point-like marks.
+
+    See matplotlib.markers for valid marker specifications.
+    """
     legend = True
     normed = False
 
-    def default_scale(self, data: Series) -> Scale:
-        var_type = variable_type(data, boolean_type="boolean", strict_boolean=True)
-        return Boolean() if var_type == "boolean" else Nominal()
+    def default_scale(self, data: Series) -> Nominal:
+        """Return a nominal scale for marker shapes."""
+        return Nominal()
 
-    def infer_scale(self, arg: Any, data: Series) -> Scale:
-        var_type = variable_type(data, boolean_type="boolean", strict_boolean=True)
-        return Boolean(arg) if var_type == "boolean" else Nominal(arg)
+    def get_mapping(self, scale: Scale, data: Series) -> Callable[[Series], Series]:
+        """
+        Create a mapping function for marker symbols.
 
-    def standardize(self, val: Any) -> bool:
-        return bool(val)
+        Parameters
+        ----------
+        scale
+            Scale instance.
+        data
+            Input data series.
 
-    def _default_values(self, n: int) -> list:
-        """Return a list of n values, alternating True and False."""
-        if n > 2:
-            msg = " ".join([
-                f"The variable assigned to {self.variable} has more than two levels,",
-                f"so {self.variable} values will cycle and may be uninterpretable",
-            ])
-            # TODO fire in a "nice" way (see above)
-            warnings.warn(msg, UserWarning)
-        return [x for x, _ in zip(itertools.cycle([True, False]), range(n))]
+        Returns
+        -------
+        Callable that maps data to marker specifications.
+        """
+        levels = categorical_order(data)
 
-    def get_mapping(self, scale: Scale, data: Series) -> Mapping:
-        """Return a function that maps each data value to True or False."""
-        boolean_scale = isinstance(scale, Boolean)
-        order = getattr(scale, "order", [True, False] if boolean_scale else None)
-        levels = categorical_order(data, order)
-        values = self._get_values(scale, levels)
+        default_markers = ["o", "X", "^", "s", "D", "v", "p", "*", "h", "8"]
 
-        if boolean_scale:
-            values = values[::-1]
-
-        def mapping(x):
-            ixs = np.asarray(np.nan_to_num(x), np.intp)
-            return [
-                values[ix] if np.isfinite(x_i) else False
-                for x_i, ix in zip(x, ixs)
-            ]
-
-        return mapping
-
-    def _get_values(self, scale: Scale, levels: list) -> list:
-        """Validate scale.values and identify a value for each level."""
-        if isinstance(scale.values, list):
-            values = [bool(x) for x in scale.values]
+        if scale.values is None:
+            markers = default_markers[:len(levels)]
         elif isinstance(scale.values, dict):
-            values = [bool(scale.values[x]) for x in levels]
-        elif scale.values is None:
-            values = self._default_values(len(levels))
+            self._check_dict_entries(levels, scale.values)
+            markers = [scale.values[x] for x in levels]
+        elif isinstance(scale.values, (tuple, list)):
+            markers = self._check_list_length(levels, list(scale.values))
         else:
-            msg = " ".join([
-                f"Scale values for {self.variable} must be passed in",
-                f"a list or dict; not {type(scale.values)}."
-            ])
-            raise TypeError(msg)
+            raise ValueError("Marker values must be None, list, or dict")
 
-        return values
+        marker_lookup = dict(zip(levels, markers))
+
+        def mapper(x: Series) -> Series:
+            return x.map(marker_lookup)
+
+        return mapper
+
+    def standardize(self, val: Any = None) -> MarkerPattern:
+        """Standardize marker representation."""
+        if val is None:
+            return "o"
+        return val
+
+
+class Linestyle(Property):
+    """
+    Pattern used for drawing lines.
+
+    Valid values: '-', '--', '-.', ':', or custom dash tuple.
+    """
+    legend = True
+    normed = False
+
+    def default_scale(self, data: Series) -> Nominal:
+        """Return a nominal scale for line styles."""
+        return Nominal()
+
+    def get_mapping(self, scale: Scale, data: Series) -> Callable[[Series], Series]:
+        """
+        Create a mapping function for line styles.
+
+        Parameters
+        ----------
+        scale
+            Scale instance.
+        data
+            Input data series.
+
+        Returns
+        -------
+        Callable that maps data to linestyle specifications.
+        """
+        levels = categorical_order(data)
+
+        default_styles = ["-", "--", "-.", ":"]
+
+        if scale.values is None:
+            styles = default_styles[:len(levels)]
+        elif isinstance(scale.values, dict):
+            self._check_dict_entries(levels, scale.values)
+            styles = [scale.values[x] for x in levels]
+        elif isinstance(scale.values, (tuple, list)):
+            styles = self._check_list_length(levels, list(scale.values))
+        else:
+            raise ValueError("Linestyle values must be None, list, or dict")
+
+        style_lookup = dict(zip(levels, styles))
+
+        def mapper(x: Series) -> Series:
+            return x.map(style_lookup)
+
+        return mapper
 
 
 # =================================================================================== #
-# Enumeration of properties for use by Plot and Mark classes
+# Special properties
 # =================================================================================== #
-# TODO turn this into a property registry with hooks, etc.
-# TODO Users do not interact directly with properties, so how to document them?
 
 
-PROPERTY_CLASSES = {
+class Group(Property):
+    """
+    Semantic grouping variable without visual aesthetic mapping.
+
+    Used to create separate groups for aggregation or statistical computation
+    without producing a corresponding legend.
+    """
+    legend = False
+    normed = False
+
+
+PROPERTIES: dict[str, type[Property]] = {
     "x": Coordinate,
     "y": Coordinate,
     "color": Color,
     "alpha": Alpha,
-    "fill": Fill,
+    "fill": Color,
+    "stroke": StrokeColor,
     "marker": Marker,
-    "pointsize": PointSize,
-    "stroke": Stroke,
-    "linewidth": LineWidth,
-    "linestyle": LineStyle,
-    "fillcolor": Color,
-    "fillalpha": Alpha,
-    "edgewidth": EdgeWidth,
-    "edgestyle": LineStyle,
-    "edgecolor": Color,
-    "edgealpha": Alpha,
-    "text": Property,
-    "halign": HorizontalAlignment,
-    "valign": VerticalAlignment,
-    "offset": Offset,
-    "fontsize": FontSize,
-    "xmin": Coordinate,
-    "xmax": Coordinate,
-    "ymin": Coordinate,
-    "ymax": Coordinate,
-    "group": Property,
-    # TODO pattern?
-    # TODO gradient?
+    "linestyle": Linestyle,
+    "linewidth": Linewidth,
+    "edgewidth": Edgewidth,
+    "size": Size,
+    "group": Group,
 }
-
-PROPERTIES = {var: cls(var) for var, cls in PROPERTY_CLASSES.items()}
