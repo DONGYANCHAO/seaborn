@@ -12,7 +12,7 @@ The classes should behave roughly in the style of scikit-learn.
   variables would make more sense.
 - Some class have data-dependent preprocessing that should be cached and used
   multiple times (think defining histogram bins off all data and then counting
-  observations within each bin multiple times per data subsets). These currently
+  observations within each bin multiple times per data subset). These currently
   have unique names, but it would be good to have a common name. Not quite
   `fit`, but something similar.
 - Alternatively, the transform interface could take some information about grouping
@@ -24,19 +24,50 @@ The classes should behave roughly in the style of scikit-learn.
   class instantiation.
 
 """
+from __future__ import annotations
+
 from numbers import Number
 from statistics import NormalDist
+from typing import TYPE_CHECKING, Optional, Tuple, Union
+
 import numpy as np
 import pandas as pd
-try:
-    from scipy.stats import gaussian_kde
-    _no_scipy = False
-except ImportError:
-    from .external.kde import gaussian_kde
-    _no_scipy = True
 
 from .algorithms import bootstrap
 from .utils import _check_argument
+
+if TYPE_CHECKING:
+    from scipy.stats import gaussian_kde as GaussianKDE
+
+
+_no_scipy: bool = False
+_gaussian_kde: Optional[type] = None
+
+
+def _get_gaussian_kde() -> type:
+    """
+    Lazily import and cache gaussian_kde from scipy or fallback.
+
+    Returns
+    -------
+    type
+        The gaussian_kde class from scipy.stats or the fallback implementation.
+    """
+    global _no_scipy, _gaussian_kde
+
+    if _gaussian_kde is not None:
+        return _gaussian_kde
+
+    try:
+        from scipy.stats import gaussian_kde
+        _gaussian_kde = gaussian_kde
+        _no_scipy = False
+    except ImportError:
+        from .external.kde import gaussian_kde as fallback_kde
+        _gaussian_kde = fallback_kde
+        _no_scipy = True
+
+    return _gaussian_kde
 
 
 class KDE:
@@ -82,8 +113,10 @@ class KDE:
         self.clip = clip
         self.cumulative = cumulative
 
-        if cumulative and _no_scipy:
-            raise RuntimeError("Cumulative KDE evaluation requires scipy")
+        if cumulative:
+            gaussian_kde = _get_gaussian_kde()
+            if _no_scipy:
+                raise RuntimeError("Cumulative KDE evaluation requires scipy")
 
         self.support = None
 
@@ -136,6 +169,7 @@ class KDE:
 
     def _fit(self, fit_data, weights=None):
         """Fit the scipy kde while adding bw_adjust logic and version check."""
+        gaussian_kde = _get_gaussian_kde()
         fit_kws = {"bw_method": self.bw_method}
         if weights is not None:
             fit_kws["weights"] = weights

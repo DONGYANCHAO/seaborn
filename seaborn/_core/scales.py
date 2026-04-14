@@ -1,10 +1,21 @@
 from __future__ import annotations
+
 import re
 from copy import copy
 from collections.abc import Sequence
-from dataclasses import dataclass
+from dataclasses import dataclass, field
 from functools import partial
-from typing import Any, Callable, Tuple, Optional, ClassVar
+from typing import (
+    Any,
+    Callable,
+    Tuple,
+    Optional,
+    ClassVar,
+    Union,
+    List,
+    Dict,
+    TYPE_CHECKING,
+)
 
 import numpy as np
 import matplotlib as mpl
@@ -37,7 +48,6 @@ from pandas import Series
 from seaborn._core.rules import categorical_order
 from seaborn._core.typing import Default, default
 
-from typing import TYPE_CHECKING
 if TYPE_CHECKING:
     from seaborn._core.plot import Plot
     from seaborn._core.properties import Property
@@ -47,9 +57,14 @@ if TYPE_CHECKING:
         Callable[[ArrayLike], ArrayLike], Callable[[ArrayLike], ArrayLike]
     ]
 
-    # TODO Reverting typing to Any as it was proving too complicated to
-    # work out the right way to communicate the types to mypy. Revisit!
     Pipeline = Sequence[Optional[Callable[[Any], Any]]]
+
+
+TransFuncs = Tuple[
+    Callable[[Any], Any], Callable[[Any], Any]
+]
+
+Pipeline = List[Optional[Callable[[Any], Any]]]
 
 
 class Scale:
@@ -62,32 +77,34 @@ class Scale:
     _matplotlib_scale: ScaleBase
     _spacer: staticmethod
     _legend: tuple[list[Any], list[str]] | None
+    _tick_params: dict[str, Any] | None
+    _label_params: dict[str, Any] | None
 
-    def __post_init__(self):
+    def __post_init__(self) -> None:
 
         self._tick_params = None
         self._label_params = None
         self._legend = None
 
-    def tick(self):
+    def tick(self) -> Scale:
         raise NotImplementedError()
 
-    def label(self):
+    def label(self) -> Scale:
         raise NotImplementedError()
 
-    def _get_locators(self):
+    def _get_locators(self, **kwargs: Any) -> tuple[Locator, Locator | None]:
         raise NotImplementedError()
 
-    def _get_formatter(self, locator: Locator | None = None):
+    def _get_formatter(self, locator: Locator | None = None, **kwargs: Any) -> Formatter:
         raise NotImplementedError()
 
-    def _get_scale(self, name: str, forward: Callable, inverse: Callable):
+    def _get_scale(self, name: str, forward: Callable, inverse: Callable) -> ScaleBase:
 
-        major_locator, minor_locator = self._get_locators(**self._tick_params)
-        major_formatter = self._get_formatter(major_locator, **self._label_params)
+        major_locator, minor_locator = self._get_locators(**(self._tick_params or {}))
+        major_formatter = self._get_formatter(major_locator, **(self._label_params or {}))
 
         class InternalScale(mpl.scale.FuncScale):
-            def set_default_locators_and_formatters(self, axis):
+            def set_default_locators_and_formatters(self, axis: Axis) -> None:
                 axis.set_major_locator(major_locator)
                 if minor_locator is not None:
                     axis.set_minor_locator(minor_locator)
@@ -98,8 +115,6 @@ class Scale:
     def _spacing(self, x: Series) -> float:
         space = self._spacer(x)
         if np.isnan(space):
-            # This happens when there is no variance in the orient coordinate data
-            # Not exactly clear what the right default is, but 1 seems reasonable?
             return 1
         return space
 
@@ -112,12 +127,10 @@ class Scale:
         """Perform scale-specific axis tweaks after adding artists."""
         pass
 
-    def __call__(self, data: Series) -> ArrayLike:
+    def __call__(self, data: Series) -> Any:
 
-        trans_data: Series | NDArray | list
+        trans_data: Series | np.ndarray | list
 
-        # TODO sometimes we need to handle scalars (e.g. for Line)
-        # but what is the best way to do that?
         scalar_data = np.isscalar(data)
         if scalar_data:
             trans_data = np.array([data])
@@ -134,7 +147,7 @@ class Scale:
             return trans_data
 
     @staticmethod
-    def _identity():
+    def _identity() -> Scale:
 
         class Identity(Scale):
             _pipeline = []
@@ -896,9 +909,16 @@ class PseudoAxis:
     code, this object acts like an Axis and can be used to scale other variables.
 
     """
-    axis_name = ""  # Matplotlib requirement but not actually used
+    axis_name: str = ""
+    converter: Any
+    units: Any
+    scale: ScaleBase
+    major: mpl.axis.Ticker
+    minor: mpl.axis.Ticker
+    _data_interval: tuple[float | None, float | None]
+    _view_interval: tuple[float, float]
 
-    def __init__(self, scale):
+    def __init__(self, scale: ScaleBase) -> None:
 
         self.converter = None
         self.units = None
@@ -906,55 +926,45 @@ class PseudoAxis:
         self.major = mpl.axis.Ticker()
         self.minor = mpl.axis.Ticker()
 
-        # It appears that this needs to be initialized this way on matplotlib 3.1,
-        # but not later versions. It is unclear whether there are any issues with it.
         self._data_interval = None, None
 
         scale.set_default_locators_and_formatters(self)
-        # self.set_default_intervals()  Is this ever needed?
 
-    def set_view_interval(self, vmin, vmax):
+    def set_view_interval(self, vmin: float, vmax: float) -> None:
         self._view_interval = vmin, vmax
 
-    def get_view_interval(self):
+    def get_view_interval(self) -> tuple[float, float]:
         return self._view_interval
 
-    # TODO do we want to distinguish view/data intervals? e.g. for a legend
-    # we probably want to represent the full range of the data values, but
-    # still norm the colormap. If so, we'll need to track data range separately
-    # from the norm, which we currently don't do.
-
-    def set_data_interval(self, vmin, vmax):
+    def set_data_interval(self, vmin: float, vmax: float) -> None:
         self._data_interval = vmin, vmax
 
-    def get_data_interval(self):
+    def get_data_interval(self) -> tuple[float | None, float | None]:
         return self._data_interval
 
-    def get_tick_space(self):
-        # TODO how to do this in a configurable / auto way?
-        # Would be cool to have legend density adapt to figure size, etc.
+    def get_tick_space(self) -> int:
         return 5
 
-    def set_major_locator(self, locator):
+    def set_major_locator(self, locator: Locator) -> None:
         self.major.locator = locator
         locator.set_axis(self)
 
-    def set_major_formatter(self, formatter):
+    def set_major_formatter(self, formatter: Formatter) -> None:
         self.major.formatter = formatter
         formatter.set_axis(self)
 
-    def set_minor_locator(self, locator):
+    def set_minor_locator(self, locator: Locator) -> None:
         self.minor.locator = locator
         locator.set_axis(self)
 
-    def set_minor_formatter(self, formatter):
+    def set_minor_formatter(self, formatter: Formatter) -> None:
         self.minor.formatter = formatter
         formatter.set_axis(self)
 
-    def set_units(self, units):
+    def set_units(self, units: Any) -> None:
         self.units = units
 
-    def update_units(self, x):
+    def update_units(self, x: Any) -> None:
         """Pass units to the internal converter, potentially updating its mapping."""
         self.converter = mpl.units.registry.get_converter(x)
         if self.converter is not None:
@@ -969,10 +979,7 @@ class PseudoAxis:
             if info.majfmt is not None:
                 self.set_major_formatter(info.majfmt)
 
-            # This is in matplotlib method; do we need this?
-            # self.set_default_intervals()
-
-    def convert_units(self, x):
+    def convert_units(self, x: Any) -> Any:
         """Return a numeric representation of the input data."""
         if np.issubdtype(np.asarray(x).dtype, np.number):
             return x
@@ -980,15 +987,10 @@ class PseudoAxis:
             return x
         return self.converter.convert(x, self.units, self)
 
-    def get_scale(self):
-        # Note that matplotlib actually returns a string here!
-        # (e.g., with a log scale, axis.get_scale() returns "log")
-        # Currently we just hit it with minor ticks where it checks for
-        # scale == "log". I'm not sure how you'd actually use log-scale
-        # minor "ticks" in a legend context, so this is fine....
+    def get_scale(self) -> ScaleBase:
         return self.scale
 
-    def get_majorticklocs(self):
+    def get_majorticklocs(self) -> Any:
         return self.major.locator()
 
 

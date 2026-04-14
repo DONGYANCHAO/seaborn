@@ -1,5 +1,8 @@
 """Functions to visualize matrices of data."""
+from __future__ import annotations
+
 import warnings
+from typing import TYPE_CHECKING, Optional, Any
 
 import matplotlib as mpl
 from matplotlib.collections import LineCollection
@@ -7,11 +10,6 @@ import matplotlib.pyplot as plt
 from matplotlib import gridspec
 import numpy as np
 import pandas as pd
-try:
-    from scipy.cluster import hierarchy
-    _no_scipy = False
-except ImportError:
-    _no_scipy = True
 
 from . import cm
 from .axisgrid import Grid
@@ -26,6 +24,39 @@ from .utils import (
 
 
 __all__ = ["heatmap", "clustermap"]
+
+_no_scipy: bool = False
+_hierarchy: Optional[Any] = None
+
+
+def _get_scipy_hierarchy():
+    """
+    Lazily import and cache scipy.cluster.hierarchy.
+
+    Returns
+    -------
+    module
+        The scipy.cluster.hierarchy module.
+
+    Raises
+    ------
+    RuntimeError
+        If scipy is not installed.
+    """
+    global _no_scipy, _hierarchy
+
+    if _hierarchy is not None:
+        return _hierarchy
+
+    try:
+        from scipy.cluster import hierarchy
+        _hierarchy = hierarchy
+        _no_scipy = False
+    except ImportError:
+        _no_scipy = True
+        raise RuntimeError("scipy is required for this functionality")
+
+    return _hierarchy
 
 
 def _index_to_label(index):
@@ -527,6 +558,7 @@ class _DendrogramPlotter:
         self.independent_coord = self.dendrogram['icoord']
 
     def _calculate_linkage_scipy(self):
+        hierarchy = _get_scipy_hierarchy()
         linkage = hierarchy.linkage(self.array, method=self.method,
                                     metric=self.metric)
         return linkage
@@ -574,6 +606,7 @@ class _DendrogramPlotter:
             .dendrogram. The important key-value pairing is
             "reordered_ind" which indicates the re-ordering of the matrix
         """
+        hierarchy = _get_scipy_hierarchy()
         return hierarchy.dendrogram(self.linkage, no_plot=True,
                                     color_threshold=-np.inf)
 
@@ -681,8 +714,7 @@ def dendrogram(
     dendrogramplotter.reordered_ind
 
     """
-    if _no_scipy:
-        raise RuntimeError("dendrogram requires scipy to be installed")
+    _get_scipy_hierarchy()
 
     plotter = _DendrogramPlotter(data, linkage=linkage, axis=axis,
                                  metric=metric, method=method,
@@ -699,8 +731,7 @@ class ClusterGrid(Grid):
                  figsize=None, row_colors=None, col_colors=None, mask=None,
                  dendrogram_ratio=None, colors_ratio=None, cbar_pos=None):
         """Grid object for organizing clustered heatmap input on to axes"""
-        if _no_scipy:
-            raise RuntimeError("ClusterGrid requires scipy to be available")
+        _get_scipy_hierarchy()
 
         if isinstance(data, pd.DataFrame):
             self.data = data

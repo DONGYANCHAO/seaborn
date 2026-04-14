@@ -1,12 +1,23 @@
 from __future__ import annotations
+
 import itertools
 import warnings
+from typing import (
+    Any,
+    Callable,
+    Tuple,
+    List,
+    Union,
+    Optional,
+    ClassVar,
+    TYPE_CHECKING,
+)
 
 import numpy as np
-from numpy.typing import ArrayLike
+from numpy.typing import ArrayLike, NDArray
 from pandas import Series
 import matplotlib as mpl
-from matplotlib.colors import to_rgb, to_rgba, to_rgba_array
+from matplotlib.colors import to_rgb, to_rgba, to_rgba_array, Colormap
 from matplotlib.markers import MarkerStyle
 from matplotlib.path import Path
 
@@ -15,7 +26,9 @@ from seaborn._core.rules import categorical_order, variable_type
 from seaborn.palettes import QUAL_PALETTES, color_palette, blend_palette
 from seaborn.utils import get_color_cycle
 
-from typing import Any, Callable, Tuple, List, Union, Optional
+if TYPE_CHECKING:
+    from typing_extensions import Self
+
 
 RGBTuple = Tuple[float, float, float]
 RGBATuple = Tuple[float, float, float, float]
@@ -33,7 +46,7 @@ MarkerPattern = Union[
     MarkerStyle,
 ]
 
-Mapping = Callable[[ArrayLike], ArrayLike]
+PropertyMapping = Callable[[ArrayLike], ArrayLike]
 
 
 # =================================================================================== #
@@ -44,13 +57,11 @@ Mapping = Callable[[ArrayLike], ArrayLike]
 class Property:
     """Base class for visual properties that can be set directly or be data scaling."""
 
-    # When True, scales for this property will populate the legend by default
-    legend = False
+    legend: ClassVar[bool] = False
+    normed: ClassVar[bool] = False
+    variable: str
 
-    # When True, scales for this property normalize data to [0, 1] before mapping
-    normed = False
-
-    def __init__(self, variable: str | None = None):
+    def __init__(self, variable: str | None = None) -> None:
         """Initialize the property with the name of the corresponding plot variable."""
         if not variable:
             variable = self.__class__.__name__.lower()
@@ -71,15 +82,9 @@ class Property:
 
     def infer_scale(self, arg: Any, data: Series) -> Scale:
         """Given data and a scaling argument, initialize appropriate scale class."""
-        # TODO put these somewhere external for validation
-        # TODO putting this here won't pick it up if subclasses define infer_scale
-        # (e.g. color). How best to handle that? One option is to call super after
-        # handling property-specific possibilities (e.g. for color check that the
-        # arg is not a valid palette name) but that could get tricky.
         trans_args = ["log", "symlog", "logit", "pow", "sqrt"]
         if isinstance(arg, str):
             if any(arg.startswith(k) for k in trans_args):
-                # TODO validate numeric type? That should happen centrally somewhere
                 return Continuous(trans=arg)
             else:
                 msg = f"Unknown magic arg for {self.variable} scale: '{arg}'."
@@ -89,9 +94,9 @@ class Property:
             msg = f"Magic arg for {self.variable} scale must be str, not {arg_type}."
             raise TypeError(msg)
 
-    def get_mapping(self, scale: Scale, data: Series) -> Mapping:
+    def get_mapping(self, scale: Scale, data: Series) -> PropertyMapping:
         """Return a function that maps from data domain to property range."""
-        def identity(x):
+        def identity(x: ArrayLike) -> ArrayLike:
             return x
         return identity
 
@@ -125,7 +130,6 @@ class Property:
             ])
             values = values[:len(levels)]
 
-        # TODO look into custom PlotSpecWarning with better formatting
         if message:
             warnings.warn(message, UserWarning)
 
