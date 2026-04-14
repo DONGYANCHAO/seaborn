@@ -24,19 +24,47 @@ The classes should behave roughly in the style of scikit-learn.
   class instantiation.
 
 """
+from __future__ import annotations
+
 from numbers import Number
 from statistics import NormalDist
+from typing import TYPE_CHECKING
+
 import numpy as np
 import pandas as pd
-try:
-    from scipy.stats import gaussian_kde
-    _no_scipy = False
-except ImportError:
-    from .external.kde import gaussian_kde
-    _no_scipy = True
 
 from .algorithms import bootstrap
 from .utils import _check_argument
+
+if TYPE_CHECKING:
+    from scipy.stats import gaussian_kde
+
+# Lazy import for scipy
+_gaussian_kde = None
+_no_scipy: bool | None = None
+
+
+def _get_gaussian_kde():
+    """Lazy import of gaussian_kde, falling back to internal implementation."""
+    global _gaussian_kde, _no_scipy
+    if _gaussian_kde is None:
+        try:
+            from scipy.stats import gaussian_kde
+            _gaussian_kde = gaussian_kde
+            _no_scipy = False
+        except ImportError:
+            from .external.kde import gaussian_kde
+            _gaussian_kde = gaussian_kde
+            _no_scipy = True
+    return _gaussian_kde
+
+
+def _check_scipy() -> bool:
+    """Check if scipy is available (cached)."""
+    global _no_scipy
+    if _no_scipy is None:
+        _get_gaussian_kde()  # This will set _no_scipy
+    return _no_scipy
 
 
 class KDE:
@@ -82,7 +110,7 @@ class KDE:
         self.clip = clip
         self.cumulative = cumulative
 
-        if cumulative and _no_scipy:
+        if cumulative and _check_scipy():
             raise RuntimeError("Cumulative KDE evaluation requires scipy")
 
         self.support = None
@@ -140,7 +168,7 @@ class KDE:
         if weights is not None:
             fit_kws["weights"] = weights
 
-        kde = gaussian_kde(fit_data, **fit_kws)
+        kde = _get_gaussian_kde()(fit_data, **fit_kws)
         kde.set_bandwidth(kde.factor * self.bw_adjust)
 
         return kde
