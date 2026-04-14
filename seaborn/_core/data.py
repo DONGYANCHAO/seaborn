@@ -4,12 +4,34 @@ Components for parsing variable assignments and internally representing plot dat
 from __future__ import annotations
 
 from collections.abc import Mapping, Sized
-from typing import cast
+from typing import (
+    Any, Generic, Literal, TypeVar, Protocol, TypedDict, Union, cast, overload
+)
 
+import numpy as np
 import pandas as pd
-from pandas import DataFrame
+from pandas import DataFrame, Series
 
 from seaborn._core.typing import DataSource, VariableSpec, ColumnName
+
+
+class VariableMapping(TypedDict):
+    """Type specification for variable mapping dictionaries."""
+    x: VariableSpec
+    y: VariableSpec
+    hue: VariableSpec
+    size: VariableSpec
+    style: VariableSpec
+
+
+class DataFrameLike(Protocol):
+    """Protocol defining the interface for objects convertible to DataFrame."""
+
+    def to_pandas(self) -> DataFrame:
+        ...
+
+
+T = TypeVar("T")
 
 
 class PlotData:
@@ -37,10 +59,16 @@ class PlotData:
         Dictionary mapping plot variable names to names in source data structure(s).
     ids
         Dictionary mapping plot variable names to unique data source identifiers.
+    source_data
+        Reference to the original input data source.
+    source_vars
+        Dictionary of original variable specifications used to initialize.
+    frames
+        Dictionary mapping keys to sub-frames (used primarily for faceting).
 
     """
     frame: DataFrame
-    frames: dict[tuple, DataFrame]
+    frames: dict[tuple[str, ...], DataFrame]
     names: dict[str, str | None]
     ids: dict[str, str | int]
     source_data: DataSource
@@ -50,7 +78,7 @@ class PlotData:
         self,
         data: DataSource,
         variables: dict[str, VariableSpec],
-    ):
+    ) -> None:
 
         data = handle_data_source(data)
         frame, names, ids = self._assign_variables(data, variables)
@@ -58,12 +86,6 @@ class PlotData:
         self.frame = frame
         self.names = names
         self.ids = ids
-
-        # The reason we possibly have a dictionary of frames is to support the
-        # Plot.pair operation, post scaling, where each x/y variable needs its
-        # own frame. This feels pretty clumsy and there are a bunch of places in
-        # the client code with awkard if frame / elif frames constructions.
-        # It would be great to have a cleaner abstraction here.
         self.frames = {}
 
         self.source_data = data
@@ -75,35 +97,51 @@ class PlotData:
             return any(key in df for df in self.frames.values())
         return key in self.frame
 
+    @overload
+    def join(self, data: None, variables: None) -> PlotData:
+        ...
+
+    @overload
+    def join(self, data: DataSource, variables: None) -> PlotData:
+        ...
+
+    @overload
+    def join(self, data: None, variables: dict[str, VariableSpec] | None) -> PlotData:
+        ...
+
     def join(
         self,
         data: DataSource,
         variables: dict[str, VariableSpec] | None,
     ) -> PlotData:
-        """Add, replace, or drop variables and return as a new dataset."""
-        # Inherit the original source of the upstream data by default
+        """
+        Add, replace, or drop variables and return as a new dataset.
+
+        Parameters
+        ----------
+        data
+            Input data source; if None, inherits from parent dataset.
+        variables
+            Dictionary mapping variable names to their specifications.
+            Passing None for a variable will remove it from the dataset.
+
+        Returns
+        -------
+        New PlotData instance with updated variables.
+        """
         if data is None:
             data = self.source_data
-
-        # TODO allow `data` to be a function (that is called on the source data?)
 
         if not variables:
             variables = self.source_vars
 
-        # Passing var=None implies that we do not want that variable in this layer
         disinherit = [k for k, v in variables.items() if v is None]
 
-        # Create a new dataset with just the info passed here
         new = PlotData(data, variables)
-
-        # -- Update the inherited DataSource with this new information
 
         drop_cols = [k for k in self.frame if k in new.frame or k in disinherit]
         parts = [self.frame.drop(columns=drop_cols), new.frame]
 
-        # Because we are combining distinct columns, this is perhaps more
-        # naturally thought of as a "merge"/"join". But using concat because
-        # some simple testing suggests that it is marginally faster.
         frame = pd.concat(parts, axis=1, sort=False)
 
         names = {k: v for k, v in self.names.items() if k not in disinherit}
@@ -116,7 +154,6 @@ class PlotData:
         new.names = names
         new.ids = ids
 
-        # Multiple chained operations should always inherit from the original object
         new.source_data = self.source_data
         new.source_vars = self.source_vars
 
@@ -165,19 +202,16 @@ class PlotData:
         names: dict[str, str | None]
         ids: dict[str, str | int]
 
-        plot_data = {}
+        plot_data: dict[str, Any] = {}
         names = {}
         ids = {}
 
         given_data = data is not None
         if data is None:
-            # Data is optional; all variables can be defined as vectors
-            # But simplify downstream code by always having a usable source data object
             source_data = {}
         else:
             source_data = data
 
-        # Variables can also be extracted from the index of a DataFrame
         if isinstance(source_data, pd.DataFrame):
             index = source_data.index.to_frame().to_dict("series")
         else:
@@ -185,18 +219,9 @@ class PlotData:
 
         for key, val in variables.items():
 
-            # Simply ignore variables with no specification
             if val is None:
                 continue
 
-            # Try to treat the argument as a key for the data collection.
-            # But be flexible about what can be used as a key.
-            # Usually it will be a string, but allow other hashables when
-            # taking from the main data object. Allow only strings to reference
-            # fields in the index, because otherwise there is too much ambiguity.
-
-            # TODO this will be rendered unnecessary by the following pandas fix:
-            # https://github.com/pandas-dev/pandas/pull/41283
             try:
                 hash(val)
                 val_is_hashable = True
@@ -204,8 +229,6 @@ class PlotData:
                 val_is_hashable = False
 
             val_as_data_key = (
-                # See https://github.com/pandas-dev/pandas/pull/41283
-                # (isinstance(val, abc.Hashable) and val in source_data)
                 (val_is_hashable and val in source_data)
                 or (isinstance(val, str) and val in index)
             )
@@ -220,8 +243,6 @@ class PlotData:
 
             elif isinstance(val, str):
 
-                # This looks like a column name but, lookup failed.
-
                 err = f"Could not interpret value `{val}` for `{key}`. "
                 if not given_data:
                     err += "Value is a string, but `data` was not passed."
@@ -231,13 +252,9 @@ class PlotData:
 
             else:
 
-                # Otherwise, assume the value somehow represents data
-
-                # Ignore empty data structures
                 if isinstance(val, Sized) and len(val) == 0:
                     continue
 
-                # If vector has no index, it must match length of data table
                 if isinstance(data, pd.DataFrame) and not isinstance(val, pd.Series):
                     if isinstance(val, Sized) and len(data) != len(val):
                         val_cls = val.__class__.__name__
@@ -250,28 +267,43 @@ class PlotData:
 
                 plot_data[key] = val
 
-                # Try to infer the original name using pandas-like metadata
                 if hasattr(val, "name"):
-                    names[key] = ids[key] = str(val.name)  # type: ignore  # mypy/1424
+                    names[key] = ids[key] = str(val.name)  # type: ignore[attr-defined]
                 else:
                     names[key] = None
                     ids[key] = id(val)
 
-        # Construct a tidy plot DataFrame. This will convert a number of
-        # types automatically, aligning on index in case of pandas objects
-        # TODO Note: this fails when variable specs *only* have scalars!
         frame = pd.DataFrame(plot_data)
 
         return frame, names, ids
 
 
 def handle_data_source(data: DataSource) -> pd.DataFrame | Mapping | None:
-    """Convert the data source object to a common union representation."""
+    """
+    Convert the data source object to a common union representation.
+
+    Parameters
+    ----------
+    data
+        Input data source; may be a DataFrame, Mapping, or object with
+        a `to_pandas` method.
+
+    Returns
+    -------
+    Standardized representation: DataFrame, Mapping, or None.
+
+    Raises
+    ------
+    TypeError
+        If data source cannot be converted to a usable format.
+    RuntimeError
+        If conversion to pandas DataFrame fails.
+    """
     if isinstance(data, pd.DataFrame) or isinstance(data, Mapping) or data is None:
         return data
     elif hasattr(data, "to_pandas"):
         try:
-            df = data.to_pandas()
+            df = data.to_pandas()  # type: ignore[union-attr]
         except Exception as err:
             msg = (
                 "Encountered an exception when converting data source "

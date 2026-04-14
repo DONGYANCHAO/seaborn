@@ -1,17 +1,25 @@
 from __future__ import annotations
 from dataclasses import dataclass
-from typing import Any, Callable
+from typing import TYPE_CHECKING, Any, Callable
 
 import numpy as np
 from numpy import ndarray
 import pandas as pd
 from pandas import DataFrame
-try:
+
+if TYPE_CHECKING:
     from scipy.stats import gaussian_kde
-    _no_scipy = False
-except ImportError:
-    from seaborn.external.kde import gaussian_kde
-    _no_scipy = True
+
+
+def _get_gaussian_kde():
+    """Lazily import and return gaussian_kde implementation."""
+    try:
+        from scipy.stats import gaussian_kde
+        return gaussian_kde, False
+    except ImportError:
+        from seaborn.external.kde import gaussian_kde
+        return gaussian_kde, True
+
 
 from seaborn._core.groupby import GroupBy
 from seaborn._core.scales import Scale
@@ -93,8 +101,10 @@ class KDE(Stat):
 
     def __post_init__(self):
 
-        if self.cumulative and _no_scipy:
-            raise RuntimeError("Cumulative KDE evaluation requires scipy")
+        if self.cumulative:
+            _, _no_scipy = _get_gaussian_kde()
+            if _no_scipy:
+                raise RuntimeError("Cumulative KDE evaluation requires scipy")
 
     def _check_var_list_or_boolean(self, param: str, grouping_vars: Any) -> None:
         """Do input checks on grouping parameters."""
@@ -107,13 +117,14 @@ class KDE(Stat):
             raise TypeError(f"{param_name} must be a boolean or list of strings.")
         self._check_grouping_vars(param, grouping_vars, stacklevel=3)
 
-    def _fit(self, data: DataFrame, orient: str) -> gaussian_kde:
+    def _fit(self, data: DataFrame, orient: str):
         """Fit and return a KDE object."""
         # TODO need to handle singular data
 
         fit_kws: dict[str, Any] = {"bw_method": self.bw_method}
         if "weight" in data:
             fit_kws["weights"] = data["weight"]
+        gaussian_kde, _ = _get_gaussian_kde()
         kde = gaussian_kde(data[orient], **fit_kws)
         kde.set_bandwidth(kde.factor * self.bw_adjust)
 

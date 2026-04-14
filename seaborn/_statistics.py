@@ -24,19 +24,31 @@ The classes should behave roughly in the style of scikit-learn.
   class instantiation.
 
 """
+from __future__ import annotations
+
 from numbers import Number
 from statistics import NormalDist
+from typing import TYPE_CHECKING
+
 import numpy as np
 import pandas as pd
-try:
+
+if TYPE_CHECKING:
+    from typing import Any, Callable, Tuple, Union
     from scipy.stats import gaussian_kde
-    _no_scipy = False
-except ImportError:
-    from .external.kde import gaussian_kde
-    _no_scipy = True
 
 from .algorithms import bootstrap
 from .utils import _check_argument
+
+
+def _get_gaussian_kde():
+    """Lazily import and return gaussian_kde implementation."""
+    try:
+        from scipy.stats import gaussian_kde
+        return gaussian_kde, False
+    except ImportError:
+        from .external.kde import gaussian_kde
+        return gaussian_kde, True
 
 
 class KDE:
@@ -82,8 +94,10 @@ class KDE:
         self.clip = clip
         self.cumulative = cumulative
 
-        if cumulative and _no_scipy:
-            raise RuntimeError("Cumulative KDE evaluation requires scipy")
+        if cumulative:
+            _, _no_scipy = _get_gaussian_kde()
+            if _no_scipy:
+                raise RuntimeError("Cumulative KDE evaluation requires scipy")
 
         self.support = None
 
@@ -140,6 +154,7 @@ class KDE:
         if weights is not None:
             fit_kws["weights"] = weights
 
+        gaussian_kde, _ = _get_gaussian_kde()
         kde = gaussian_kde(fit_data, **fit_kws)
         kde.set_bandwidth(kde.factor * self.bw_adjust)
 
