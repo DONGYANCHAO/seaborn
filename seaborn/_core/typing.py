@@ -156,3 +156,70 @@ ColorType = Union[Tuple[float, float, float], Tuple[float, float, float, float],
 MarkerType = Union[float, str, Tuple[int, int, float], List[Tuple[float, float]], Any]
 DashPattern = Tuple[float, ...]
 DashPatternWithOffset = Tuple[float, Optional[DashPattern]]
+
+
+class TransformFunc(Protocol):
+    """Protocol for transformation functions used in scales."""
+
+    def __call__(self, x: ArrayLike) -> ArrayLike:
+        ...
+
+
+class ScaleProtocol(Protocol):
+    """Protocol for scale objects."""
+
+    values: Union[tuple, str, list, dict, None]
+
+    def __call__(self, data: Series) -> Any:
+        ...
+
+
+class PropertyProtocol(Protocol):
+    """Protocol for property objects."""
+
+    legend: bool
+    normed: bool
+    variable: str
+
+    def default_scale(self, data: Series) -> Any:
+        ...
+
+    def infer_scale(self, arg: Any, data: Series) -> Any:
+        ...
+
+    def get_mapping(self, scale: Any, data: Series) -> Any:
+        ...
+
+
+class PlotProtocol(Protocol):
+    """Protocol for Plot objects."""
+
+    _limits: Dict[str, Any]
+
+    def _plot_layer(self, layer: Any) -> None:
+        ...
+
+
+class MarkProtocol(Protocol):
+    """Protocol for mark objects."""
+
+    def _plot(
+        self,
+        split_gen: Any,
+        scales: Dict[str, Any],
+        orient: str,
+    ) -> None:
+        ...
+
+
+class StatProtocol(Protocol):
+    """Protocol for stat objects."""
+
+    def __call__(
+        self,
+        data: DataFrame,
+        groupby: Any,
+        orient: str,
+        scales: Dict[str, Any],
+    ) -> DataFrame:
+        ...

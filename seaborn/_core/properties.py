@@ -11,6 +11,7 @@ from typing import (
     Optional,
     ClassVar,
     TYPE_CHECKING,
+    Mapping,
 )
 
 import numpy as np
@@ -191,7 +192,7 @@ class IntervalProperty(Property):
         else:
             return Continuous(arg)
 
-    def get_mapping(self, scale: Scale, data: Series) -> Mapping:
+    def get_mapping(self, scale: Scale, data: Series) -> PropertyMapping:
         """Return a function that maps from data domain to property range."""
         if isinstance(scale, Nominal):
             return self._get_nominal_mapping(scale, data)
@@ -199,9 +200,9 @@ class IntervalProperty(Property):
             return self._get_boolean_mapping(scale, data)
 
         if scale.values is None:
-            vmin, vmax = self._forward(self.default_range)
+            vmin, vmax = tuple(self._forward(self.default_range))  # type: ignore[arg-type]
         elif isinstance(scale.values, tuple) and len(scale.values) == 2:
-            vmin, vmax = self._forward(scale.values)
+            vmin, vmax = tuple(self._forward(scale.values))  # type: ignore[arg-type]
         else:
             if isinstance(scale.values, tuple):
                 actual = f"{len(scale.values)}-tuple"
@@ -219,7 +220,7 @@ class IntervalProperty(Property):
 
         return mapping
 
-    def _get_nominal_mapping(self, scale: Nominal, data: Series) -> Mapping:
+    def _get_nominal_mapping(self, scale: Nominal, data: Series) -> PropertyMapping:
         """Identify evenly-spaced values using interval or explicit mapping."""
         levels = categorical_order(data, scale.order)
         values = self._get_values(scale, levels)
@@ -233,7 +234,7 @@ class IntervalProperty(Property):
 
         return mapping
 
-    def _get_boolean_mapping(self, scale: Boolean, data: Series) -> Mapping:
+    def _get_boolean_mapping(self, scale: Boolean, data: Series) -> PropertyMapping:
         """Identify evenly-spaced values using interval or explicit mapping."""
         values = self._get_values(scale, [True, False])
 
@@ -265,8 +266,8 @@ class IntervalProperty(Property):
                 ])
                 raise TypeError(err)
 
-            vmin, vmax = self._forward([vmin, vmax])
-            values = list(self._inverse(np.linspace(vmax, vmin, len(levels))))
+            vmin_vmax = tuple(self._forward([vmin, vmax]))  # type: ignore[arg-type]
+            values = list(self._inverse(np.linspace(vmin_vmax[1], vmin_vmax[0], len(levels))))  # type: ignore[arg-type]
 
         return values
 
@@ -355,7 +356,7 @@ class ObjectProperty(Property):
         var_type = variable_type(data, boolean_type="boolean", strict_boolean=True)
         return Boolean(arg) if var_type == "boolean" else Nominal(arg)
 
-    def get_mapping(self, scale: Scale, data: Series) -> Mapping:
+    def get_mapping(self, scale: Scale, data: Series) -> PropertyMapping:
         """Define mapping as lookup into list of object values."""
         boolean_scale = isinstance(scale, Boolean)
         order = getattr(scale, "order", [True, False] if boolean_scale else None)
@@ -422,21 +423,17 @@ class Marker(ObjectProperty):
             All markers will be filled.
 
         """
-        # Start with marker specs that are well distinguishable
-        markers = [
+        markers: list[str | tuple[int, int, float]] = [
             "o", "X", (4, 0, 45), "P", (4, 0, 0), (4, 1, 0), "^", (4, 1, 45), "v",
         ]
 
-        # Now generate more from regular polygons of increasing order
         s = 5
         while len(markers) < n:
             a = 360 / (s + 1) / 2
-            markers.extend([(s + 1, 1, a), (s + 1, 0, a), (s, 1, 0), (s, 0, 0)])
+            markers.extend([(s + 1, 1, a), (s + 1, 0, a), (s, 1, 0), (s, 0, 0)])  # type: ignore[arg-type]
             s += 1
 
-        markers = [MarkerStyle(m) for m in markers[:n]]
-
-        return markers
+        return [MarkerStyle(m) for m in markers[:n]]
 
 
 class LineStyle(ObjectProperty):
@@ -580,7 +577,7 @@ class Color(Property):
         if isinstance(colors, np.ndarray):
             needs_alpha = colors.shape[1] == 4
         else:
-            needs_alpha = any(has_alpha(x) for x in colors)
+            needs_alpha = any(has_alpha(x) for x in colors)  # type: ignore[union-attr]
 
         if needs_alpha:
             return to_rgba_array(colors)
@@ -628,7 +625,7 @@ class Color(Property):
         else:
             return Nominal(arg)
 
-    def get_mapping(self, scale: Scale, data: Series) -> Mapping:
+    def get_mapping(self, scale: Scale, data: Series) -> PropertyMapping:
         """Return a function that maps from data domain to color values."""
         # TODO what is best way to do this conditional?
         # Should it be class-based or should classes have behavioral attributes?
@@ -669,7 +666,7 @@ class Color(Property):
 
         return _mapping
 
-    def _get_nominal_mapping(self, scale: Nominal, data: Series) -> Mapping:
+    def _get_nominal_mapping(self, scale: Nominal, data: Series) -> PropertyMapping:
 
         levels = categorical_order(data, scale.order)
         colors = self._get_values(scale, levels)
@@ -683,7 +680,7 @@ class Color(Property):
 
         return mapping
 
-    def _get_boolean_mapping(self, scale: Boolean, data: Series) -> Mapping:
+    def _get_boolean_mapping(self, scale: Boolean, data: Series) -> PropertyMapping:
 
         colors = self._get_values(scale, [True, False])
 
@@ -760,7 +757,7 @@ class Fill(Property):
             warnings.warn(msg, UserWarning)
         return [x for x, _ in zip(itertools.cycle([True, False]), range(n))]
 
-    def get_mapping(self, scale: Scale, data: Series) -> Mapping:
+    def get_mapping(self, scale: Scale, data: Series) -> PropertyMapping:
         """Return a function that maps each data value to True or False."""
         boolean_scale = isinstance(scale, Boolean)
         order = getattr(scale, "order", [True, False] if boolean_scale else None)

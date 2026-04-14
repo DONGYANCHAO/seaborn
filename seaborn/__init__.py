@@ -26,7 +26,6 @@ from .rcmod import (
     plotting_context,
     set_context,
     set_palette,
-    color_palette,
 )
 from .utils import (
     get_dataset_names,
@@ -86,9 +85,6 @@ from .axisgrid import (
     JointGrid,
     pairplot,
     jointplot,
-)
-from .widgets import (
-    interactive,
 )
 from .colors import xkcd_rgb, crayons
 from . import cm
@@ -151,7 +147,6 @@ __all__ = [
     "JointGrid",
     "pairplot",
     "jointplot",
-    "interactive",
     "xkcd_rgb",
     "crayons",
     "cm",
