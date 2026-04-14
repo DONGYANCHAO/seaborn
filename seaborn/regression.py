@@ -1,22 +1,37 @@
 """Plotting functions for linear models (broadly construed)."""
+from __future__ import annotations
+
 import copy
 from textwrap import dedent
 import warnings
+from typing import TYPE_CHECKING
+
 import numpy as np
 import pandas as pd
 import matplotlib as mpl
 import matplotlib.pyplot as plt
 
-try:
-    import statsmodels
-    assert statsmodels
-    _has_statsmodels = True
-except ImportError:
-    _has_statsmodels = False
-
 from . import utils
 from . import algorithms as algo
 from .axisgrid import FacetGrid, _facet_docs
+
+if TYPE_CHECKING:
+    import statsmodels
+
+# Statsmodels availability check (lazy import pattern)
+_has_statsmodels: bool | None = None
+
+
+def _check_statsmodels() -> bool:
+    """Check if statsmodels is available (cached)."""
+    global _has_statsmodels
+    if _has_statsmodels is None:
+        try:
+            import statsmodels
+            _has_statsmodels = True
+        except ImportError:
+            _has_statsmodels = False
+    return _has_statsmodels
 
 
 __all__ = ["lmplot", "regplot", "residplot"]
@@ -190,7 +205,7 @@ class _RegressionPlotter(_LinearPlotter):
         options = "logistic", "robust", "lowess"
         err = "`{}=True` requires statsmodels, an optional dependency, to be installed."
         for option in options:
-            if getattr(self, option) and not _has_statsmodels:
+            if getattr(self, option) and not _check_statsmodels():
                 raise RuntimeError(err.format(option))
 
     def fit_regression(self, ax=None, x_range=None, grid=None):

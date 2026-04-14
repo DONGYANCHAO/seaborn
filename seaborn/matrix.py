@@ -1,5 +1,8 @@
 """Functions to visualize matrices of data."""
+from __future__ import annotations
+
 import warnings
+from typing import TYPE_CHECKING
 
 import matplotlib as mpl
 from matplotlib.collections import LineCollection
@@ -7,11 +10,6 @@ import matplotlib.pyplot as plt
 from matplotlib import gridspec
 import numpy as np
 import pandas as pd
-try:
-    from scipy.cluster import hierarchy
-    _no_scipy = False
-except ImportError:
-    _no_scipy = True
 
 from . import cm
 from .axisgrid import Grid
@@ -23,6 +21,24 @@ from .utils import (
     to_utf8,
     _draw_figure,
 )
+
+if TYPE_CHECKING:
+    from scipy.cluster import hierarchy
+
+# Scipy availability check (lazy import pattern)
+_no_scipy: bool | None = None
+
+
+def _check_scipy() -> bool:
+    """Check if scipy is available (cached)."""
+    global _no_scipy
+    if _no_scipy is None:
+        try:
+            from scipy.cluster import hierarchy
+            _no_scipy = False
+        except ImportError:
+            _no_scipy = True
+    return _no_scipy
 
 
 __all__ = ["heatmap", "clustermap"]
@@ -681,7 +697,7 @@ def dendrogram(
     dendrogramplotter.reordered_ind
 
     """
-    if _no_scipy:
+    if _check_scipy():
         raise RuntimeError("dendrogram requires scipy to be installed")
 
     plotter = _DendrogramPlotter(data, linkage=linkage, axis=axis,
@@ -699,7 +715,7 @@ class ClusterGrid(Grid):
                  figsize=None, row_colors=None, col_colors=None, mask=None,
                  dendrogram_ratio=None, colors_ratio=None, cbar_pos=None):
         """Grid object for organizing clustered heatmap input on to axes"""
-        if _no_scipy:
+        if _check_scipy():
             raise RuntimeError("ClusterGrid requires scipy to be available")
 
         if isinstance(data, pd.DataFrame):
@@ -1246,7 +1262,7 @@ def clustermap(
     .. include:: ../docstrings/clustermap.rst
 
     """
-    if _no_scipy:
+    if _check_scipy():
         raise RuntimeError("clustermap requires scipy to be available")
 
     plotter = ClusterGrid(data, pivot_kws=pivot_kws, figsize=figsize,
