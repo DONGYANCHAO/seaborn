@@ -1,21 +1,49 @@
 from __future__ import annotations
+
 from dataclasses import dataclass
-from typing import Any, Callable
+from typing import TYPE_CHECKING, Any, Callable, Optional
 
 import numpy as np
 from numpy import ndarray
 import pandas as pd
 from pandas import DataFrame
-try:
-    from scipy.stats import gaussian_kde
-    _no_scipy = False
-except ImportError:
-    from seaborn.external.kde import gaussian_kde
-    _no_scipy = True
 
 from seaborn._core.groupby import GroupBy
 from seaborn._core.scales import Scale
 from seaborn._stats.base import Stat
+
+if TYPE_CHECKING:
+    from scipy.stats import gaussian_kde as GaussianKDE
+
+
+_no_scipy: bool = False
+_gaussian_kde: Optional[type] = None
+
+
+def _get_gaussian_kde() -> type:
+    """
+    Lazily import and cache gaussian_kde from scipy or fallback.
+
+    Returns
+    -------
+    type
+        The gaussian_kde class from scipy.stats or the fallback implementation.
+    """
+    global _no_scipy, _gaussian_kde
+
+    if _gaussian_kde is not None:
+        return _gaussian_kde
+
+    try:
+        from scipy.stats import gaussian_kde
+        _gaussian_kde = gaussian_kde
+        _no_scipy = False
+    except ImportError:
+        from seaborn.external.kde import gaussian_kde as fallback_kde
+        _gaussian_kde = fallback_kde
+        _no_scipy = True
+
+    return _gaussian_kde
 
 
 @dataclass
@@ -84,7 +112,7 @@ class KDE(Stat):
 
     """
     bw_adjust: float = 1
-    bw_method: str | float | Callable[[gaussian_kde], float] = "scott"
+    bw_method: str | float | Callable[[Any], float] = "scott"
     common_norm: bool | list[str] = True
     common_grid: bool | list[str] = True
     gridsize: int | None = 200
@@ -93,8 +121,10 @@ class KDE(Stat):
 
     def __post_init__(self):
 
-        if self.cumulative and _no_scipy:
-            raise RuntimeError("Cumulative KDE evaluation requires scipy")
+        if self.cumulative:
+            _get_gaussian_kde()
+            if _no_scipy:
+                raise RuntimeError("Cumulative KDE evaluation requires scipy")
 
     def _check_var_list_or_boolean(self, param: str, grouping_vars: Any) -> None:
         """Do input checks on grouping parameters."""
@@ -107,10 +137,9 @@ class KDE(Stat):
             raise TypeError(f"{param_name} must be a boolean or list of strings.")
         self._check_grouping_vars(param, grouping_vars, stacklevel=3)
 
-    def _fit(self, data: DataFrame, orient: str) -> gaussian_kde:
+    def _fit(self, data: DataFrame, orient: str) -> Any:
         """Fit and return a KDE object."""
-        # TODO need to handle singular data
-
+        gaussian_kde = _get_gaussian_kde()
         fit_kws: dict[str, Any] = {"bw_method": self.bw_method}
         if "weight" in data:
             fit_kws["weights"] = data["weight"]
